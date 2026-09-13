@@ -3,13 +3,10 @@
 import json
 import logging
 import re
-from typing import Optional
 
 import boto3
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import ChatPromptTemplate
-
 from config import settings
+from langchain_core.prompts import ChatPromptTemplate
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +21,61 @@ SYSTEM_PROMPT = (
     "Do not add explanations or markdown."
 )
 
-URGENCY_HIGH = ("urgente", "urgent", "emergency", "asap", "immediately", "inmediato", "critical", "crítico")
-URGENCY_MEDIUM = ("cuando", "cuándo", "when", "hora", "time", "today", "hoy", "tomorrow", "mañana", "donde", "dónde", "where", "cómo", "how", "información", "information")
-NEGATIVE_WORDS = ("lluvia", "rain", "tormenta", "storm", "mal", "bad", "problema", "problem", "error", "failed", "queja", "complaint", "no funciona", "broken")
-POSITIVE_WORDS = ("genial", "great", "bien", "good", "excelente", "excellent", "me gusta", "love", "awesome")
+URGENCY_HIGH = (
+    "urgente",
+    "urgent",
+    "emergency",
+    "asap",
+    "immediately",
+    "inmediato",
+    "critical",
+    "crítico",
+)
+URGENCY_MEDIUM = (
+    "cuando",
+    "cuándo",
+    "when",
+    "hora",
+    "time",
+    "today",
+    "hoy",
+    "tomorrow",
+    "mañana",
+    "donde",
+    "dónde",
+    "where",
+    "cómo",
+    "how",
+    "información",
+    "information",
+)
+NEGATIVE_WORDS = (
+    "lluvia",
+    "rain",
+    "tormenta",
+    "storm",
+    "mal",
+    "bad",
+    "problema",
+    "problem",
+    "error",
+    "failed",
+    "queja",
+    "complaint",
+    "no funciona",
+    "broken",
+)
+POSITIVE_WORDS = (
+    "genial",
+    "great",
+    "bien",
+    "good",
+    "excelente",
+    "excellent",
+    "me gusta",
+    "love",
+    "awesome",
+)
 
 ALLOWED_SENTIMENT = ("positive", "neutral", "negative")
 ALLOWED_URGENCY = ("low", "medium", "high")
@@ -43,9 +91,9 @@ def build_bedrock_llm():
         session = boto3.Session(
             aws_access_key_id=settings.aws_access_key_id,
             aws_secret_access_key=settings.aws_secret_access_key,
-            region_name=settings.aws_region
+            region_name=settings.aws_region,
         )
-        client = session.client('bedrock-runtime')
+        client = session.client("bedrock-runtime")
         logger.info(
             "Using AWS Bedrock model %s (region %s)", settings.bedrock_model_id, settings.aws_region
         )
@@ -73,23 +121,50 @@ class TransactionAnalyzer:
                     ]
                 )
                 | llm
-                | StrOutputParser()
             )
 
-    def analyze(self, query: str, location: Optional[dict]) -> dict:
+    def analyze(self, query: str, location: dict | None) -> dict:
         if self.llm is None:
-            return self._fallback(query, location)
+            result = self._fallback(query, location)
+            result["llm_model"] = "heuristic-fallback"
+            result["tokens_used"] = 0
+            return result
         try:
-            raw = self.chain.invoke(
+            message = self.chain.invoke(
                 {
                     "query": query,
                     "location": json.dumps(location or {}, ensure_ascii=False),
                 }
             )
-            return self._normalize(self._parse_json(raw), query, location)
+            result = self._normalize(
+                self._parse_json(self._content_to_text(message.content)),
+                query,
+                location,
+            )
+            usage = getattr(message, "usage_metadata", None) or {}
+            result["llm_model"] = (
+                (message.response_metadata or {}).get("model_name")
+                or self.llm.base_model_id
+                or self.llm.model_id
+            )
+            result["tokens_used"] = int(usage.get("total_tokens", 0))
+            return result
         except Exception as exc:
             logger.warning("LLM analysis failed (%s); using heuristic fallback", exc)
-            return self._fallback(query, location)
+            result = self._fallback(query, location)
+            result["llm_model"] = "heuristic-fallback"
+            result["tokens_used"] = 0
+            return result
+
+    @staticmethod
+    def _content_to_text(content) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "\n".join(
+                block.get("text", "") for block in content if isinstance(block, dict)
+            ).strip()
+        return str(content or "")
 
     def _parse_json(self, raw: str) -> dict:
         raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
@@ -101,7 +176,7 @@ class TransactionAnalyzer:
                 return json.loads(match.group(0))
             raise ValueError(f"Could not parse JSON from LLM output: {raw[:200]}")
 
-    def _normalize(self, data: dict, query: str, location: Optional[dict]) -> dict:
+    def _normalize(self, data: dict, query: str, location: dict | None) -> dict:
         fallback = self._fallback(query, location)
         sentiment = str(data.get("sentiment", "")).strip().lower()
         urgency = str(data.get("urgency_level", "")).strip().lower()
@@ -112,21 +187,17 @@ class TransactionAnalyzer:
             "agent_response": response or fallback["agent_response"],
         }
 
-    def _fallback(self, query: str, location: Optional[dict]) -> dict:
+    def _fallback(self, query: str, location: dict | None) -> dict:
         q = query.lower()
         urgency = (
             "high"
             if any(word in q for word in URGENCY_HIGH)
-            else "medium"
-            if any(word in q for word in URGENCY_MEDIUM)
-            else "low"
+            else "medium" if any(word in q for word in URGENCY_MEDIUM) else "low"
         )
         sentiment = (
             "positive"
             if any(word in q for word in POSITIVE_WORDS)
-            else "negative"
-            if any(word in q for word in NEGATIVE_WORDS)
-            else "neutral"
+            else "negative" if any(word in q for word in NEGATIVE_WORDS) else "neutral"
         )
 
         info = location or {}
