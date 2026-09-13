@@ -1,0 +1,8 @@
+FROM python:3.11-slim
+ENV PYTHONUNBUFFERED=1 UV_LINK_MODE=copy
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+WORKDIR /app
+COPY . .
+RUN uv sync --frozen
+EXPOSE 8003
+CMD ["uv", "run", "--frozen", "python", "-m", "mcp_server.server"]
