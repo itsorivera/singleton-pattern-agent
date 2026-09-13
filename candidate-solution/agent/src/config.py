@@ -1,7 +1,9 @@
-"""Configuration for the analyzer agent."""
-
 from pydantic_settings import BaseSettings, SettingsConfigDict
+import os
+from pathlib import Path
+from dotenv import load_dotenv
 
+load_dotenv()
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -13,10 +15,10 @@ class Settings(BaseSettings):
         "postgresql://agent_user:agent_password@localhost:5432/gen_ai_agent_db"
     )
 
-    aws_region: str = "us-east-1"
-    aws_access_key_id: str = ""
-    aws_secret_access_key: str = ""
     bedrock_model_id: str = "anthropic.claude-haiku-4-5-20251001-v1:0"
+    aws_region: str = os.getenv("AWS_REGION", "us-east-1")
+    aws_access_key_id: str = os.getenv("AWS_ACCESS_KEY_ID", "")
+    aws_secret_access_key: str = os.getenv("AWS_SECRET_ACCESS_KEY", "")
 
 
 settings = Settings()
