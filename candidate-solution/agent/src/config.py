@@ -15,7 +15,7 @@ class Settings(BaseSettings):
         "postgresql://agent_user:agent_password@localhost:5432/gen_ai_agent_db"
     )
 
-    bedrock_model_id: str = "anthropic.claude-haiku-4-5-20251001-v1:0"
+    bedrock_model_id: str = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
     aws_region: str = os.getenv("AWS_REGION", "us-east-1")
     aws_access_key_id: str = os.getenv("AWS_ACCESS_KEY_ID", "")
     aws_secret_access_key: str = os.getenv("AWS_SECRET_ACCESS_KEY", "")
