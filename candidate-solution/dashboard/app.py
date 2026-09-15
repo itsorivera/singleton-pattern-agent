@@ -1,8 +1,8 @@
-"""GeoAI Analytics dashboard - Streamlit app reading Silver and Gold layers.
+"""GeoAI Analytics dashboard - Streamlit app reading ONLY the Gold layer.
 
-Shows real-time KPIs and analytical charts built on top of the Gold layer
-(analytics_metrics), plus the latest enriched transactions. The metrics
-section auto-refreshes at a configurable interval. Run with:
+All KPIs and analytical charts are built on top of analytics_metrics (Gold),
+so the dashboard never queries Silver or Bronze directly. The metrics section
+auto-refreshes at a configurable interval. Run with:
 
     PYTHONPATH=candidate-solution/dashboard uv run streamlit run candidate-solution/dashboard/app.py
 """
@@ -10,6 +10,7 @@ section auto-refreshes at a configurable interval. Run with:
 import pandas as pd
 import psycopg2
 import streamlit as st
+
 from config import database_url
 
 st.set_page_config(page_title="GeoAI Analytics", page_icon=":earth_americas:", layout="wide")
@@ -44,7 +45,7 @@ def _fetch(sql: str) -> pd.DataFrame:
 
 
 st.title("GeoAI Analytics - Métricas en tiempo real")
-st.caption("KPIs y gráficos construidos sobre la capa Gold (analytics_metrics).")
+st.caption("KPIs y gráficos construidos únicamente sobre la capa Gold (analytics_metrics).")
 
 interval = st.sidebar.selectbox(
     "Frecuencia de actualización",
@@ -54,8 +55,8 @@ interval = st.sidebar.selectbox(
 )
 
 st.sidebar.markdown(
-    "El pipeline ETL (`python -m etl`) promueve datos de Bronze a Gold "
-    "periódicamente para alimentar este dashboard."
+    "Fuente de datos: **capa Gold** (`analytics_metrics`). El pipeline ETL "
+    "(`python -m etl`) agrega Bronze→Silver→Gold para alimentar este dashboard."
 )
 
 
@@ -66,26 +67,21 @@ def render_dashboard():
         st.info("Todavía no hay métricas en la capa Gold. Ejecuta el pipeline ETL primero.")
         return
 
-    totals = gold.agg(
-        {
-            "total_transactions": "sum",
-            "unique_users": "sum",
-            "total_tokens_used": "sum",
-            "avg_response_time_ms": "mean",
-        }
+    total_tx = int(gold["total_transactions"].sum())
+    weighted_avg_response = pd.to_numeric(gold["avg_response_time_ms"])
+    response_ms = (
+        (gold["total_transactions"] * weighted_avg_response).sum() / total_tx
+        if total_tx and weighted_avg_response.notna().any()
+        else None
     )
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Transacciones", f"{int(totals['total_transactions']):,}")
-    c2.metric("Usuarios únicos", f"{int(totals['unique_users']):,}")
-    c3.metric("Tokens usados", f"{int(totals['total_tokens_used']):,}")
+    c1.metric("Transacciones", f"{total_tx:,}")
+    c2.metric("Tokens usados", f"{int(gold['total_tokens_used'].sum()):,}")
+    c3.metric("Usuarios únicos (suma de grupos)", f"{int(gold['unique_users'].sum()):,}")
     c4.metric(
-        "Tiempo de respuesta promedio",
-        (
-            f"{totals['avg_response_time_ms']:,.0f} ms"
-            if pd.notna(totals["avg_response_time_ms"])
-            else "—"
-        ),
+        "Tiempo de respuesta promedio (ponderado)",
+        f"{response_ms:,.0f} ms" if response_ms else "—",
     )
 
     st.subheader("Sentimiento de consultas")
@@ -129,19 +125,34 @@ def render_dashboard():
     col_c, col_d = st.columns(2)
     with col_c:
         st.subheader("Tiempo de respuesta promedio por día")
-        response_by_day = gold.groupby("metric_date")["avg_response_time_ms"].mean().sort_index()
-        st.line_chart(response_by_day)
+        response_trend = (
+            gold.groupby("metric_date")["avg_response_time_ms"].mean().sort_index()
+        )
+        st.line_chart(response_trend)
     with col_d:
         st.subheader("Temperatura promedio por ciudad")
-        silver = _fetch("SELECT city, temperature FROM enriched_transactions WHERE is_valid = TRUE")
-        if not silver.empty:
-            temp_by_city = silver.groupby("city")["temperature"].mean().sort_values(ascending=False)
-            st.bar_chart(temp_by_city)
+        temp_by_city = gold.groupby("city")["avg_temperature"].mean().sort_values(ascending=False)
+        st.bar_chart(temp_by_city)
 
-    st.subheader("Últimas transacciones enriquecidas")
-    latest = _fetch("SELECT * FROM v_recent_enriched_transactions LIMIT 20")
-    if not latest.empty:
-        st.dataframe(latest, width="stretch")
+    col_e, col_f = st.columns(2)
+    with col_e:
+        st.subheader("Volumen por tipo de consulta predominante")
+        by_query_type = (
+            gold.groupby("most_common_query_type")["total_transactions"]
+            .sum()
+            .sort_values(ascending=False)
+        )
+        st.bar_chart(by_query_type)
+    with col_f:
+        st.subheader("Hora pico por grupo (fecha, ciudad)")
+        peak_hours = gold["peak_hour"].value_counts().sort_index()
+        st.bar_chart(peak_hours)
+
+    st.subheader("Métricas Gold por fecha y ciudad")
+    st.dataframe(
+        gold.sort_values(["metric_date", "city"], ascending=[False, True]),
+        width="stretch",
+    )
 
     last_agg = gold["aggregated_at"].max()
     st.caption(f"Última agregación Gold registrada: {last_agg}")
